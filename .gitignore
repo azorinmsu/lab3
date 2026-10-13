@@ -97,8 +97,7 @@ venv/
 *.pyc
 
 ##############################
-## Instructor solutions (keep local, do not publish)
+## Instructor-only (keep local, do not publish)
 ##############################
 docs/instructor-guide.md
-instructor/reference-tests/
-instructor/patches/
+instructor/
