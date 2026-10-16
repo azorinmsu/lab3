@@ -31,20 +31,39 @@ def main():
     timeout_type = JClass("java.util.concurrent.TimeoutException")
     executor = executors.newFixedThreadPool(2)
 
-    # TODO:
-    # 1. Оформите два Callable: один вызывает updateAndRecord("Ada", 10),
-    #    другой вызывает readRecordsAndState().
-    # 2. Отправьте оба задания в executor и дождитесь Future.get
-    #    с ограничением времени (используйте time_unit и timeout_type).
-    # 3. При таймауте запишите в stderr сообщение про deadlock и завершите
-    #    процесс через halt(2).
-    # 4. После успешного завершения проверьте согласованность:
-    #    ticks == 1, score == 10, records == ["Ada:10"].
-    #    При нарушении — сообщение в stderr и halt(1).
-    # 5. При успехе напишите "ok" в stdout и вызовите halt(0).
-    #
-    # Не используйте time.sleep как основной способ синхронизации.
-    raise NotImplementedError("TODO: implement concurrent update/read scenario")
+    @jpype.JImplements("java.util.concurrent.Callable")
+    class Update:
+        @jpype.JOverride
+        def call(self):
+            session.updateAndRecord("Ada", 10)
+            return "updated"
+
+    @jpype.JImplements("java.util.concurrent.Callable")
+    class Read:
+        @jpype.JOverride
+        def call(self):
+            return str(session.readRecordsAndState())
+
+    futures = [executor.submit(Update()), executor.submit(Read())]
+    try:
+        for future in futures:
+            future.get(3, time_unit.SECONDS)
+    except timeout_type:
+        sys.stderr.write(
+            "deadlock: updateAndRecord and readRecordsAndState did not finish\n"
+        )
+        halt(2)
+
+    ticks = int(session.getTicks())
+    score = int(session.getScore())
+    records = [str(item) for item in session.getRecords()]
+    if ticks != 1 or score != 10 or records != ["Ada:10"]:
+        sys.stderr.write(
+            f"inconsistent state ticks={ticks} score={score} records={records}\n"
+        )
+        halt(1)
+    sys.stdout.write("ok\n")
+    halt(0)
 
 
 try:
@@ -62,29 +81,17 @@ def game_session(jvm):
 
 @pytest.mark.timeout(30)
 def test_bug_06_no_deadlock(game_session, concurrency, project_dir):
-    """
-    BUG-06: Проверить, что обновление игры и чтение рекордов завершаются.
-
-    Один поток вызывает GameSession.updateAndRecord, другой одновременно
-    вызывает GameSession.readRecordsAndState. Обе операции должны закончиться
-    за ограниченное время, а после этого состояние сессии должно быть согласованным:
-    одно подтверждённое начисление, одна запись рекорда.
-
-    WORKER уже поднимает JVM, создаёт GameSession, выравнивает потоки через
-    CyclicBarrier и хуки setAfterEngineLockAcquired / setAfterScoreLockAcquired,
-    готовит ExecutorService. Допишите сценарий внутри WORKER.main после
-    создания пула потоков.
-
-    ВАЖНО: сценарий с возможной взаимной блокировкой запускайте через
-    concurrency.run_isolated, чтобы зависший Java-поток не остановил pytest.
-
-    TODO:
-    1. Завершите реализацию WORKER.main (см. TODO внутри WORKER).
-    2. Запустите WORKER через concurrency.run_isolated с таймаутом.
-    3. Убедитесь, что дочерний процесс завершился с кодом 0.
-    4. При ненулевом коде покажите stdout/stderr в сообщении assertion.
-
-    Не используйте time.sleep как основной способ синхронизации.
-    """
+    """updateAndRecord and readRecordsAndState both finish, then state matches."""
     assert game_session.getTicks() == 0
-    pytest.skip("TODO: implement concurrency assertions")
+
+    completed = concurrency.run_isolated(
+        WORKER,
+        timeout_seconds=20,
+        project=project_dir,
+    )
+    assert completed.returncode == 0, (
+        "deadlock: updateAndRecord and readRecordsAndState did not finish\n"
+        f"exit={completed.returncode}\n"
+        f"stdout:\n{completed.stdout}\n"
+        f"stderr:\n{completed.stderr}"
+    )
