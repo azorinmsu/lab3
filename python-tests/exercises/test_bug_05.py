@@ -1,26 +1,23 @@
 import pytest
 
-
-@pytest.fixture
-def food_placer(jvm):
-    return jvm.JClass("game.food.FoodPlacer")()
+from helpers.assertions import assert_equal
 
 
-def test_bug_05_food_check_then_act(food_placer, concurrency, jvm):
-    """
-    BUG-05: Проверить, что одна клетка не получает две порции еды сразу.
+def test_bug_05_food_check_then_act(concurrency, jvm):
+    """Only one concurrent place() for the same cell may succeed."""
+    Barriers = jvm.JClass("game.lab.Barriers")
+    placer = jvm.JClass("game.food.FoodPlacer")()
+    barrier = concurrency.cyclic_barrier(2)
+    placer.setBetweenCheckAndPlace(Barriers.arrive(barrier))
 
-    Несколько потоков одновременно вызывают FoodPlacer.place для одной клетки.
-    Успешной должна быть только одна установка.
+    def place_once():
+        return bool(placer.place(3, 4))
 
-    Для выравнивания: setBetweenCheckAndPlace и game.lab.Barriers.arrive.
-
-    TODO:
-    1. Выровнять потоки барьером внутри place.
-    2. Выполнить конкурентные place(x, y) с одинаковыми координатами.
-    3. Дождаться завершения.
-    4. Проверить число успешных place и size().
-
-    Не используйте time.sleep как основной способ синхронизации.
-    """
-    pytest.skip("TODO: implement concurrency assertions")
+    results = concurrency.invoke_all([place_once, place_once], timeout_seconds=5)
+    success = sum(1 for value in results if value)
+    assert_equal(
+        success,
+        1,
+        "check-then-act: concurrent place() on one cell succeeded more than once",
+    )
+    assert_equal(int(placer.size()), 1, "check-then-act: occupied cell count")

@@ -1,28 +1,27 @@
 import pytest
 
-
-@pytest.fixture
-def direction_controller(jvm):
-    return jvm.JClass("game.control.DirectionController")()
+from helpers.assertions import assert_true
 
 
-def test_bug_02_direction_race(direction_controller, concurrency, jvm):
-    """
-    BUG-02: Проверить, что конкурентные команды управления не дают
-    разворот на 180 градусов за один игровой тик.
-
-    DirectionController.beginTick() фиксирует направление на старте тика.
-    Параллельные setDirection не должны установить направление, противоположное
-    tickStart.
-
-    TODO:
-    1. Вызвать beginTick().
-    2. Одновременно отправить допустимую и противоположную исходному направлению команды.
-    3. Дождаться завершения задач.
-    4. Проверить, что итог не является разворотом на 180 градусов.
-
-    Не используйте time.sleep как основной способ синхронизации.
-    """
+def test_bug_02_direction_race(concurrency, jvm):
+    """Concurrent commands must not apply a 180-degree reverse within one tick."""
     Direction = jvm.JClass("game.control.Direction")
-    direction_controller.beginTick()
-    pytest.skip("TODO: implement concurrency assertions")
+    controller = jvm.JClass("game.control.DirectionController")()
+    controller.beginTick()
+    up_done = concurrency.countdown_latch(1)
+
+    def go_up():
+        controller.setDirection(Direction.UP)
+        up_done.countDown()
+
+    def go_left():
+        concurrency.await_latch(up_done)
+        controller.setDirection(Direction.LEFT)
+
+    concurrency.invoke_all([go_up, go_left], timeout_seconds=5)
+    applied = str(controller.getDirection())
+    assert_true(
+        applied != "LEFT",
+        "direction race: concurrent UP then LEFT from RIGHT produced LEFT "
+        "(180-degree reverse within one tick)",
+    )

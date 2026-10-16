@@ -1,25 +1,28 @@
 import pytest
 
-
-@pytest.fixture
-def collision_processor(jvm):
-    return jvm.JClass("game.collision.CollisionProcessor")()
+from helpers.assertions import assert_equal
 
 
-def test_bug_10_double_collision(collision_processor, concurrency, jvm):
-    """
-    BUG-10: Проверить at-most-once обработку столкновения.
+def test_bug_10_double_collision(concurrency, jvm):
+    """Parallel handleCollision for one snake must run at most once."""
+    Barriers = jvm.JClass("game.lab.Barriers")
+    processor = jvm.JClass("game.collision.CollisionProcessor")()
+    barrier = concurrency.cyclic_barrier(2)
+    processor.setBeforeMarkDead(Barriers.arrive(barrier))
 
-    Два потока одновременно вызывают handleCollision для одной змейки.
-    Событие смерти и начисление должны выполниться ровно один раз.
+    def hit():
+        processor.handleCollision(5)
 
-    Для выравнивания: setBeforeMarkDead и game.lab.Barriers.arrive.
+    concurrency.invoke_all([hit, hit], timeout_seconds=5)
 
-    TODO:
-    1. Выровнять два вызова handleCollision.
-    2. Дождаться завершения.
-    3. Проверить getDeathEvents() == 1 и корректный scoreAwarded.
-
-    Не используйте time.sleep как основной способ синхронизации.
-    """
-    pytest.skip("TODO: implement concurrency assertions")
+    assert_equal(
+        int(processor.getDeathEvents()),
+        1,
+        "double collision: death event processed more than once",
+    )
+    assert_equal(
+        int(processor.getScoreAwarded()),
+        5,
+        "double collision: score awarded more than once",
+    )
+    assert processor.isDead()

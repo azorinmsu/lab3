@@ -1,26 +1,46 @@
 import pytest
 
-
-@pytest.fixture
-def pause_controller(jvm):
-    return jvm.JClass("game.loop.PauseController")()
+from helpers.assertions import assert_equal
 
 
-def test_bug_07_pause_resume_race(pause_controller, concurrency, jvm):
-    """
-    BUG-07: Проверить, что после применения pause() тик не выполняется.
+def test_bug_07_pause_resume_race(concurrency, jvm):
+    """Stale pause sampling must not let a tick run after pause is applied."""
+    jpype = jvm
+    controller = jvm.JClass("game.loop.PauseController")()
+    barrier = concurrency.cyclic_barrier(2)
+    pause_done = concurrency.countdown_latch(1)
 
-    Параллельно вызываются pause() и tryTick(). Если pause уже применён к моменту
-    принятия решения о тике, счётчик тиков не должен увеличиться.
+    @jpype.JImplements("java.lang.Runnable")
+    class PauseHook:
+        @jpype.JOverride
+        def run(self):
+            barrier.await_()
 
-    Хуки: setBeforePause, setBeforeTickDecision, барьер/latch.
+    @jpype.JImplements("java.lang.Runnable")
+    class TickHook:
+        @jpype.JOverride
+        def run(self):
+            barrier.await_()
+            pause_done.await_()
 
-    TODO:
-    1. Выровнять pause и tryTick.
-    2. Гарантировать, что pause применяется до повторной проверки в тике.
-    3. Дождаться завершения.
-    4. Проверить, что tryTick вернул False и getTicks() == 0.
+    controller.setBeforePause(PauseHook())
+    controller.setBeforeTickDecision(TickHook())
 
-    Не используйте time.sleep как основной способ синхронизации.
-    """
-    pytest.skip("TODO: implement concurrency assertions")
+    outcomes = {"ticked": None}
+
+    def pause():
+        controller.pause()
+        pause_done.countDown()
+
+    def tick():
+        outcomes["ticked"] = bool(controller.tryTick())
+
+    concurrency.invoke_all([pause, tick], timeout_seconds=5)
+
+    assert_equal(
+        outcomes["ticked"],
+        False,
+        "pause/resume race: tryTick ran after pause() was applied",
+    )
+    assert_equal(int(controller.getTicks()), 0, "pause/resume race: tick counter")
+    assert controller.isPaused()
