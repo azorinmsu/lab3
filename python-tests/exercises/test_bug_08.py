@@ -1,22 +1,33 @@
 import pytest
 
+from helpers.assertions import assert_equal, assert_true
+
 
 def test_bug_08_concurrent_persistence(concurrency, jvm, tmp_path):
-    """
-    BUG-08: Проверить конкурентную запись таблицы рекордов.
+    """Parallel save() calls must persist every line in a valid format."""
+    Barriers = jvm.JClass("game.lab.Barriers")
+    path = tmp_path / "scores.txt"
+    store = jvm.JClass("game.score.HighScoreStore")(jvm.JClass("java.nio.file.Paths").get(str(path)))
+    threads = 8
+    barrier = concurrency.cyclic_barrier(threads)
+    store.setBeforeWrite(Barriers.arrive(barrier))
 
-    Несколько потоков одновременно вызывают HighScoreStore.save.
-    Все строки должны сохраниться, формат player:points должен остаться целым.
+    def save_one(index):
+        store.save("P" + str(index), index + 1)
 
-    Для выравнивания: setBeforeWrite и game.lab.Barriers.arrive.
-    Файл создавайте через tmp_path.
+    concurrency.invoke_all(
+        [lambda i=i: save_one(i) for i in range(threads)],
+        timeout_seconds=10,
+    )
 
-    TODO:
-    1. Создать HighScoreStore на временном файле.
-    2. Выполнить параллельные save.
-    3. Дождаться завершения.
-    4. Прочитать файл и проверить число и формат строк.
-
-    Не используйте time.sleep как основной способ синхронизации.
-    """
-    pytest.skip("TODO: implement concurrency assertions")
+    lines = [str(line) for line in store.readAll() if str(line).strip()]
+    assert_equal(
+        len(lines),
+        threads,
+        "concurrent persistence: not every confirmed save was stored intact",
+    )
+    for line in lines:
+        assert_true(
+            ":" in line and not line.startswith(":"),
+            f"concurrent persistence: malformed score line {line!r}",
+        )
